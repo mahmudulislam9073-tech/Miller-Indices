@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Miller Indices Viewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #121212;
+      color: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 12px;
+      background: #1e1e1e;
+      border-bottom: 1px solid #333;
+    }
+    input {
+      width: 110px;
+      padding: 6px 10px;
+      font-size: 16px;
+      text-align: center;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background: #2a2a2a;
+      color: #fff;
+    }
+    button {
+      padding: 6px 16px;
+      font-size: 16px;
+      cursor: pointer;
+      background: #0d6efd;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+    button:hover { background: #0b5ed7; }
+    #error { color: #ff6b6b; font-size: 14px; }
+    #canvas { flex: 1; width: 100%; display: block; cursor: grab; }
+    #canvas:active { cursor: grabbing; }
+    .hint {
+      position: fixed;
+      bottom: 10px;
+      left: 12px;
+      font-size: 12px;
+      color: #888;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="controls">
+    <label for="hkl">Miller Indices  for plane (hkl):</label>
+    <input type="text" id="hkl" value="111" placeholder="e.g. 110 or -110" />
+    <button id="view-btn">View</button>
+    <span id="error"></span>
+  </div>
+
+  <canvas id="canvas"></canvas>
+  <div class="hint">Click + drag to rotate 3D cube • Scroll to zoom</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    let yaw = -0.65;
+    let pitch = 0.45;
+    let scale = 220;
+    let h = 1, k = 1, l = 1;
+
+    function V(x, y, z) { return { x: x, y: y, z: z }; }
+
+    const EDGES = [
+      { a: V(0,0,0), b: V(1,0,0) }, { a: V(0,1,0), b: V(1,1,0) },
+      { a: V(0,0,1), b: V(1,0,1) }, { a: V(0,1,1), b: V(1,1,1) },
+      { a: V(0,0,0), b: V(0,1,0) }, { a: V(1,0,0), b: V(1,1,0) },
+      { a: V(0,0,1), b: V(0,1,1) }, { a: V(1,0,1), b: V(1,1,1) },
+      { a: V(0,0,0), b: V(0,0,1) }, { a: V(1,0,0), b: V(1,0,1) },
+      { a: V(0,1,0), b: V(0,1,1) }, { a: V(1,1,0), b: V(1,1,1) }
+    ];
+
+    function project(p) {
+      const cx = p.y - 0.5;
+      const cy = p.z - 0.5;
+      const cz = p.x - 0.5;
+
+      const cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+      const x1 = cx * cosY - cz * sinY;
+      const z1 = cx * sinY + cz * cosY;
+
+      const cosP = Math.cos(pitch), sinP = Math.sin(pitch);
+      const y2 = cy * cosP - z1 * sinP;
+      const z2 = cy * sinP + z1 * cosP;
+
+      const fov = 4 / (4 - z2);
+      return {
+        sx: canvas.width / 2 + x1 * scale * fov,
+        sy: canvas.height / 2 - y2 * scale * fov,
+        depth: z2
+      };
+    }
+
+    function getPlanePolygon(h, k, l, d) {
+      const pts = [];
+      const eps = 1e-6;
+
+      EDGES.forEach(function(edge) {
+        const p1 = edge.a, p2 = edge.b;
+        const v1 = h * p1.x + k * p1.y + l * p1.z - d;
+        const v2 = h * p2.x + k * p2.y + l * p2.z - d;
+
+        if (Math.abs(v1) < eps) pts.push(V(p1.x, p1.y, p1.z));
+        if (Math.abs(v2) < eps) pts.push(V(p2.x, p2.y, p2.z));
+        if ((v1 < -eps && v2 > eps) || (v1 > eps && v2 < -eps)) {
+          const t = v1 / (v1 - v2);
+          pts.push(V(
+            p1.x + t * (p2.x - p1.x),
+            p1.y + t * (p2.y - p1.y),
+            p1.z + t * (p2.z - p1.z)
+          ));
+        }
+      });
+
+      const unique = [];
+      pts.forEach(function(p) {
+        const exists = unique.some(function(u) {
+          return Math.hypot(u.x - p.x, u.y - p.y, u.z - p.z) < eps;
+        });
+        if (!exists) unique.push(p);
+      });
+
+      if (unique.length < 3) return [];
+
+      let cx = 0, cy = 0, cz = 0;
+      unique.forEach(function(p) { cx += p.x; cy += p.y; cz += p.z; });
+      cx /= unique.length; cy /= unique.length; cz /= unique.length;
+
+      const len = Math.hypot(h, k, l);
+      const nx = h / len, ny = k / len, nz = l / len;
+      const first = unique.at(0);
+      let ux = first.x - cx, uy = first.y - cy, uz = first.z - cz;
+      const uLen = Math.hypot(ux, uy, uz);
+      ux /= uLen; uy /= uLen; uz /= uLen;
+
+      const vx = ny * uz - nz * uy;
+      const vy = nz * ux - nx * uz;
+      const vz = nx * uy - ny * ux;
+
+      unique.sort(function(a, b) {
+        const ax = a.x - cx, ay = a.y - cy, az = a.z - cz;
+        const bx = b.x - cx, by = b.y - cy, bz = b.z - cz;
+        const angA = Math.atan2(ax * vx + ay * vy + az * vz, ax * ux + ay * uy + az * uz);
+        const angB = Math.atan2(bx * vx + by * vy + bz * vz, bx * ux + by * uy + bz * uz);
+        return angA - angB;
+      });
+
+      return unique;
+    }
+
+    function drawLine3D(p1, p2, color, width) {
+      const a = project(p1);
+      const b = project(p2);
+      ctx.beginPath();
+      ctx.moveTo(a.sx, a.sy);
+      ctx.lineTo(b.sx, b.sy);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.stroke();
+    }
+
+    function render() {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw unit cell edges
+      EDGES.forEach(function(edge) {
+        drawLine3D(edge.a, edge.b, '#555555', 1.5);
+      });
+
+      // Draw coordinate axes (x, y, z)
+      drawLine3D(V(0,0,0), V(1.3,0,0), '#ff5555', 2.5);
+      drawLine3D(V(0,0,0), V(0,1.3,0), '#55ff55', 2.5);
+      drawLine3D(V(0,0,0), V(0,0,1.3), '#5599ff', 2.5);
+
+      ctx.font = 'bold 16px sans-serif';
+      const lx = project(V(1.4, 0, 0)); ctx.fillStyle = '#ff5555'; ctx.fillText('x', lx.sx, lx.sy);
+      const ly = project(V(0, 1.4, 0)); ctx.fillStyle = '#55ff55'; ctx.fillText('y', ly.sx, ly.sy);
+      const lz = project(V(0, 0, 1.4)); ctx.fillStyle = '#5599ff'; ctx.fillText('z', lz.sx, lz.sy);
+
+      // Draw ONLY the single primary (hkl) plane (hx + ky + lz = 1)
+      // If all non-zero indices are negative, use d = -1 so it stays inside the unit cell
+      const d = (h <= 0 && k <= 0 && l <= 0) ? -1 : 1;
+      const poly = getPlanePolygon(h, k, l, d);
+
+      if (poly.length >= 3) {
+        ctx.beginPath();
+        poly.forEach(function(pt, idx) {
+          const proj = project(pt);
+          if (idx === 0) ctx.moveTo(proj.sx, proj.sy);
+          else ctx.lineTo(proj.sx, proj.sy);
+        });
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255, 206, 110, 0.55)';
+        ctx.fill();
+        ctx.strokeStyle = '#ffaa00';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+
+    function updateIndices() {
+      const val = document.getElementById('hkl').value.trim();
+      const err = document.getElementById('error');
+      err.textContent = '';
+
+      // Match 3 signed single-digit integers directly (e.g. "111", "-110", "2-10")
+      const matches = val.match(/-?\d/g);
+      if (!matches || matches.length !== 3 || matches.join('') !== val.replace(/\s+/g, '')) {
+        err.textContent = 'Enter 3 digits (e.g. 111 or -110)';
+        return;
+      }
+
+      const nh = Number(matches.at(0));
+      const nk = Number(matches.at(1));
+      const nl = Number(matches.at(2));
+
+      if ([nh, nk, nl].some(function(n) { return n < -6 || n > 6; })) {
+        err.textContent = 'Digits must be between -6 and 6.';
+        return;
+      }
+      if (nh === 0 && nk === 0 && nl === 0) {
+        err.textContent = 'Indices cannot all be 0.';
+        return;
+      }
+
+      h = nh; k = nk; l = nl;
+      render();
+    }
+
+    // Mouse rotation & zoom
+    let dragging = false, lastX = 0, lastY = 0;
+    canvas.addEventListener('mousedown', function(e) { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+    window.addEventListener('mouseup', function() { dragging = false; });
+    window.addEventListener('mousemove', function(e) {
+      if (!dragging) return;
+      yaw += (e.clientX - lastX) * 0.01;
+      pitch = Math.max(-1.5, Math.min(1.5, pitch + (e.clientY - lastY) * 0.01));
+      lastX = e.clientX;
+      lastY = e.clientY;
+      render();
+    });
+    canvas.addEventListener('wheel', function(e) {
+      e.preventDefault();
+      scale = Math.max(80, Math.min(500, scale - e.deltaY * 0.2));
+      render();
+    }, { passive: false });
+
+    document.getElementById('view-btn').addEventListener('click', updateIndices);
+    document.getElementById('hkl').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') updateIndices();
+    });
+    window.addEventListener('resize', render);
+
+    render();
+  </script>
+</body>
+</html>
